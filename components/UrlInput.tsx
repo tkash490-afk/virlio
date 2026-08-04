@@ -5,23 +5,37 @@ import { useState } from "react";
 export default function UrlInput() {
   const [url, setUrl] = useState("");
 
-  function handleAnalyze() {
-  if (!url.trim()) {
-    alert("Please paste a YouTube URL.");
-    return;
+  async function handleAnalyze() {
+    if (!url.trim()) {
+      alert("Please paste a YouTube URL.");
+      return;
+    }
+
+    const isYoutube =
+  url.includes("youtube.com/watch?v=") ||
+  url.includes("youtu.be/") ||
+  url.includes("youtube.com/live/") ||
+  url.includes("youtube.com/shorts/");
+
+    if (!isYoutube) {
+      alert("Please enter a valid YouTube URL.");
+      return;
+    }
+
+    const response = await fetch("/api/process-video", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url,
+      }),
+    });
+
+    const data = await response.json();
+
+    alert(JSON.stringify(data, null, 2));
   }
-
-  const isYoutube =
-    url.includes("youtube.com/watch?v=") ||
-    url.includes("youtu.be/");
-
-  if (!isYoutube) {
-    alert("Please enter a valid YouTube URL.");
-    return;
-  }
-
-  alert(`Analyzing:\n${url}`);
-}
 
   return (
     <div className="bg-white rounded-xl shadow-md p-6">
