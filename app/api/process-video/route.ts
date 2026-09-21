@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { mkdir } from "fs/promises";
+import { mkdir, readFile } from "fs/promises";
 import path from "path";
+
+import { transcribeAudio } from "../../../ai/transcribe";
+import { detectClips } from "../../../ai/clip-detector";
 
 const execFileAsync = promisify(execFile);
 
@@ -12,7 +15,7 @@ export async function GET() {
   });
 }
 
-// Reusable function for creating a video clip with FFmpeg
+// Create a video clip with FFmpeg
 async function createClip(
   inputPath: string,
   startTime: number,
@@ -35,15 +38,34 @@ async function createClip(
   ]);
 }
 
+// Extract audio for WhisperX
+async function extractAudio(
+  inputPath: string,
+  outputPath: string
+) {
+  await execFileAsync("ffmpeg", [
+    "-i",
+    inputPath,
+    "-vn",
+    "-ac",
+    "1",
+    "-ar",
+    "16000",
+    "-c:a",
+    "pcm_s16le",
+    "-y",
+    outputPath,
+  ]);
+}
+
 export async function POST(request: Request) {
   try {
-    // Read the request body
+    // Read request body
     const body = await request.json();
 
-    // Extract the URL from the request
     const { url } = body;
 
-    // Validate the URL BEFORE using it
+    // Validate URL
     if (!url) {
       return NextResponse.json(
         {
@@ -54,12 +76,20 @@ export async function POST(request: Request) {
       );
     }
 
-    // Create a temporary directory for downloaded/processed videos
-    const tempDir = path.join(process.cwd(), "temp");
+    // Temporary processing directory
+    const tempDir = path.join(
+      process.cwd(),
+      "temp"
+    );
 
-    await mkdir(tempDir, { recursive: true });
+    await mkdir(tempDir, {
+      recursive: true,
+    });
 
-    // Ask YouTube for the video's metadata
+    // --------------------------------
+    // 1. Get YouTube metadata
+    // --------------------------------
+
     const { stdout } = await execFileAsync(
       "node_modules/yt-dlp-exec/bin/yt-dlp.exe",
       [
@@ -73,19 +103,21 @@ export async function POST(request: Request) {
       ]
     );
 
-    // Convert yt-dlp's JSON text into a JavaScript object
-    const videoInfo = JSON.parse(stdout.toString());
+    const videoInfo = JSON.parse(
+      stdout.toString()
+    );
 
-    // Get the video's unique ID
     const videoId = videoInfo.id;
 
-    // Tell yt-dlp where to save the downloaded video
+    // --------------------------------
+    // 2. Download video
+    // --------------------------------
+
     const outputTemplate = path.join(
       tempDir,
       `${videoId}.%(ext)s`
     );
 
-    // Download the video
     await execFileAsync(
       "node_modules/yt-dlp-exec/bin/yt-dlp.exe",
       [
@@ -105,27 +137,108 @@ export async function POST(request: Request) {
       ]
     );
 
-    // The downloaded source video should be an MP4
-    const videoPath = path.join(tempDir, `${videoId}.mp4`);
-
-    // Create our first test clip:
-    // start at 0 seconds and last for 10 seconds
-    const clipPath = path.join(
+    const videoPath = path.join(
       tempDir,
-      `${videoId}-clip-1.mp4`
+      `${videoId}.mp4`
     );
 
-    await createClip(
+    // --------------------------------
+    // 3. Extract audio
+    // --------------------------------
+
+    const audioPath = path.join(
+      tempDir,
+      `${videoId}.wav`
+    );
+
+    await extractAudio(
       videoPath,
-      0,
-      10,
-      clipPath
+      audioPath
     );
 
-    // Return information to the frontend
+    // --------------------------------
+    // 4. Transcribe with WhisperX
+    // --------------------------------
+
+    const transcriptPath =
+      await transcribeAudio(
+        audioPath,
+        tempDir
+      );
+
+    const transcriptJson =
+      await readFile(
+        transcriptPath,
+        "utf8"
+      );
+
+    const transcript =
+      JSON.parse(transcriptJson);
+
+    // --------------------------------
+    // 5. Detect highlight clips
+    // --------------------------------
+
+    const clipSuggestions =
+      detectClips(
+        transcript.segments
+      );
+
+    // --------------------------------
+    // 6. Create actual MP4 clips
+    // --------------------------------
+
+    const clips = [];
+
+    for (
+      let i = 0;
+      i < clipSuggestions.length;
+      i++
+    ) {
+      const suggestion =
+        clipSuggestions[i];
+
+      const duration =
+        suggestion.end -
+        suggestion.start;
+
+      const clipFileName =
+        `${videoId}-clip-${i + 1}.mp4`;
+
+      const clipPath =
+        path.join(
+          tempDir,
+          clipFileName
+        );
+
+      await createClip(
+        videoPath,
+        suggestion.start,
+        duration,
+        clipPath
+      );
+
+      clips.push({
+        clipNumber: i + 1,
+        startTime: suggestion.start,
+        endTime: suggestion.end,
+        duration,
+        reason: suggestion.reason,
+        fileName: clipFileName,
+        filePath: clipPath,
+      });
+    }
+
+    // --------------------------------
+    // 7. Return results
+    // --------------------------------
+
     return NextResponse.json({
       success: true,
-      message: "Video downloaded and test clip created successfully!",
+
+      message:
+        "Video processed and AI clips created successfully!",
+
       video: {
         title: videoInfo.title,
         channel: videoInfo.uploader,
@@ -133,11 +246,9 @@ export async function POST(request: Request) {
         thumbnail: videoInfo.thumbnail,
         webpageUrl: videoInfo.webpage_url,
         videoId,
-        clip: {
-          startTime: 0,
-          duration: 10,
-        },
       },
+
+      clips,
     });
   } catch (error) {
     console.error(error);
@@ -145,13 +256,16 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         success: false,
-        message: "Video processing failed.",
+        message:
+          "Video processing failed.",
         error:
           error instanceof Error
             ? error.message
             : "Unknown error",
       },
-      { status: 400 }
+      {
+        status: 400,
+      }
     );
   }
 }

@@ -40,3 +40,18 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 gcm-diagnose.log
+
+# Virlio local AI environment
+.venv-whisper/
+
+# Virlio temporary processing files
+temp/
+
+# Generated transcription files
+*.srt
+*.tsv
+*.txt
+*.vtt
+
+# Local test output
+api-result.json
