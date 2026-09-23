@@ -9,6 +9,11 @@ import { detectClips } from "../../../ai/clip-detector";
 
 const execFileAsync = promisify(execFile);
 
+function logTiming(label: string, start: number) {
+  const seconds = ((Date.now() - start) / 1000).toFixed(2);
+  console.log(`⏱️ ${label}: ${seconds}s`);
+}
+
 export async function GET() {
   return NextResponse.json({
     message: "Virlio API is running 🚀",
@@ -29,10 +34,8 @@ async function createClip(
     inputPath,
     "-t",
     String(duration),
-    "-c:v",
-    "libx264",
-    "-c:a",
-    "aac",
+    "-c",
+    "copy",
     "-y",
     outputPath,
   ]);
@@ -60,6 +63,7 @@ async function extractAudio(
 
 export async function POST(request: Request) {
   try {
+    const totalStart = Date.now();
     // Read request body
     const body = await request.json();
 
@@ -90,18 +94,25 @@ export async function POST(request: Request) {
     // 1. Get YouTube metadata
     // --------------------------------
 
+    const metadataStart = Date.now();
+
     const { stdout } = await execFileAsync(
-      "node_modules/yt-dlp-exec/bin/yt-dlp.exe",
-      [
-        url,
-        "--dump-single-json",
-        "--no-warnings",
-        "--js-runtimes",
-        "node",
-        "--cookies-from-browser",
-        "firefox",
-      ]
-    );
+  "node_modules/yt-dlp-exec/bin/yt-dlp.exe",
+  [
+    url,
+    "--dump-single-json",
+    "--no-warnings",
+    "--js-runtimes",
+    "node",
+    "--cookies-from-browser",
+    "firefox",
+  ],
+  {
+    maxBuffer: 100 * 1024 * 1024,
+  }
+);
+
+logTiming("YouTube metadata", metadataStart);
 
     const videoInfo = JSON.parse(
       stdout.toString()
@@ -117,6 +128,8 @@ export async function POST(request: Request) {
       tempDir,
       `${videoId}.%(ext)s`
     );
+
+const downloadStart = Date.now();
 
     await execFileAsync(
       "node_modules/yt-dlp-exec/bin/yt-dlp.exe",
@@ -137,6 +150,8 @@ export async function POST(request: Request) {
       ]
     );
 
+logTiming("Video download", downloadStart);
+
     const videoPath = path.join(
       tempDir,
       `${videoId}.mp4`
@@ -151,20 +166,31 @@ export async function POST(request: Request) {
       `${videoId}.wav`
     );
 
-    await extractAudio(
-      videoPath,
-      audioPath
-    );
+    const audioStart = Date.now();
+
+await extractAudio(
+  videoPath,
+  audioPath
+);
+
+logTiming("Audio extraction", audioStart);
 
     // --------------------------------
     // 4. Transcribe with WhisperX
     // --------------------------------
 
-    const transcriptPath =
-      await transcribeAudio(
-        audioPath,
-        tempDir
-      );
+    const transcriptionStart = Date.now();
+
+const transcriptPath =
+  await transcribeAudio(
+    audioPath,
+    tempDir
+  );
+
+logTiming(
+  "WhisperX transcription",
+  transcriptionStart
+);
 
     const transcriptJson =
       await readFile(
@@ -179,10 +205,17 @@ export async function POST(request: Request) {
     // 5. Detect highlight clips
     // --------------------------------
 
-    const clipSuggestions =
-      detectClips(
-        transcript.segments
-      );
+    const detectionStart = Date.now();
+
+const clipSuggestions =
+  detectClips(
+    transcript.segments
+  );
+
+logTiming(
+  "Clip detection",
+  detectionStart
+);
 
     // --------------------------------
     // 6. Create actual MP4 clips
@@ -211,12 +244,19 @@ export async function POST(request: Request) {
           clipFileName
         );
 
-      await createClip(
-        videoPath,
-        suggestion.start,
-        duration,
-        clipPath
-      );
+      const clipStart = Date.now();
+
+await createClip(
+  videoPath,
+  suggestion.start,
+  duration,
+  clipPath
+);
+
+logTiming(
+  `Clip ${i + 1} creation`,
+  clipStart
+);
 
       clips.push({
         clipNumber: i + 1,
@@ -233,6 +273,8 @@ export async function POST(request: Request) {
     // 7. Return results
     // --------------------------------
 
+    logTiming("Total processing", totalStart);
+    
     return NextResponse.json({
       success: true,
 

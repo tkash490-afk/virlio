@@ -26,7 +26,7 @@ export async function transcribeAudio(
       "--device",
       "cpu",
       "--compute_type",
-      "float32",
+      "int8",
     ],
     {
       maxBuffer: 50 * 1024 * 1024,
